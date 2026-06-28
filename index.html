@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2e3650" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icon-192.png" />
+    <title>Pixel Hull</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #14180f;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="phone">
+      <div class="phone-head">
+        <div class="speaker"></div>
+        <div class="brand">PIXEL HULL</div>
+      </div>
+      <div class="screen">
+        <div id="game"></div>
+        <div class="lcd-grid"></div>
+      </div>
+      <div class="keypad">
+        <div class="softkeys">
+          <button class="key soft" data-key="menu" aria-label="選單">選單</button>
+          <button class="key soft" data-key="copy" aria-label="分享成績">分享</button>
+        </div>
+        <div class="controls">
+          <div class="joystick" aria-label="方向搖桿">
+            <div class="joystick-base">
+              <div class="joystick-knob"></div>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="key act fire" data-key="fire" aria-label="射擊">射擊</button>
+            <div class="action-col">
+              <button class="key act special" data-key="special" aria-label="特殊武器">✦</button>
+              <button class="key act switch" data-key="switch" aria-label="切換武器">⇄</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

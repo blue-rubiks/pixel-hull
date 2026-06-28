@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+
+# 本地 AI 協作指示，不進版控
+CLAUDE.md

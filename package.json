@@ -1,0 +1,42 @@
+{
+  "name": "pixel-hull",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Retro space shooter inspired by the classic Nokia game Space Impact. Your hull is made of pixels — and you lose them.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,html,css,yml}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "phaser": "^4.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.9.3",
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
+    "prettier": "^3.8.4",
+    "typescript": "~6.0.0",
+    "typescript-eslint": "^8.61.0",
+    "vite": "^8.0.16"
+  }
+}

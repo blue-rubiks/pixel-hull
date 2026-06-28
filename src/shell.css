@@ -1,0 +1,265 @@
+/* 手機殼：普通 HTML/CSS 蓋在 canvas 外面，不進遊戲引擎（PLANNING.md §3.7）。
+   造型「神似但不是」，不放 NOKIA 字樣與 logo（§6）。 */
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  padding: 24px 8px;
+  box-sizing: border-box;
+  background: radial-gradient(circle at 50% 30%, #2b3328, #14180f 75%);
+  font-family: 'Trebuchet MS', Verdana, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.phone {
+  width: min(560px, 96vw);
+  padding: 18px 22px 26px;
+  box-sizing: border-box;
+  border-radius: 38px 38px 46px 46px;
+  background: linear-gradient(160deg, #4a5577, #2e3650 55%, #232a40);
+  box-shadow:
+    inset 0 2px 2px rgba(255, 255, 255, 0.25),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.45),
+    0 18px 40px rgba(0, 0, 0, 0.6);
+}
+
+.phone-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.speaker {
+  width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(to right, #11151f 0 6px, #3a4258 6px 10px);
+}
+
+.brand {
+  color: #aab4d4;
+  font-size: 13px;
+  font-weight: bold;
+  letter-spacing: 3px;
+}
+
+/* 螢幕：固定 504×288（126×72 的 4 倍），確保像素銳利、網格對齊 */
+.screen {
+  position: relative;
+  width: 504px;
+  height: 288px;
+  margin: 0 auto;
+  border-radius: 8px;
+  background: #c7f0d8;
+  border: 10px solid #1c2233;
+  box-shadow: inset 0 0 14px rgba(67, 82, 61, 0.45);
+  overflow: hidden;
+}
+
+#game {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+canvas {
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
+/* LCD 像素間隙：一張平鋪網格疊上去（--px 由 shell.ts 依實際縮放設定） */
+.lcd-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  --px: 4px;
+  background-image:
+    repeating-linear-gradient(to right, rgba(34, 43, 30, 0.13) 0 1px, transparent 1px var(--px)),
+    repeating-linear-gradient(to bottom, rgba(34, 43, 30, 0.13) 0 1px, transparent 1px var(--px));
+}
+
+.keypad {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+}
+
+.softkeys {
+  display: flex;
+  gap: 120px;
+}
+
+/* 控制區：左方向鍵、右動作鍵分兩側，雙手拇指各管一邊好點擊 */
+.controls {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 14px;
+  box-sizing: border-box;
+}
+
+/* 觸控區：透明、比底座大，按下處即圓心（拇指落哪都行） */
+.joystick {
+  position: relative;
+  width: 150px;
+  height: 124px;
+  touch-action: none;
+  cursor: grab;
+}
+.joystick:active {
+  cursor: grabbing;
+}
+/* 可見底座：平常半透明停在左側當提示，按下時浮到拇指下、放開滑回 */
+.joystick-base {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 124px;
+  height: 124px;
+  margin: -62px 0 0 -62px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 38%, #2b3248, #191e2c 72%);
+  box-shadow:
+    inset 0 3px 7px rgba(0, 0, 0, 0.55),
+    inset 0 -2px 4px rgba(255, 255, 255, 0.06);
+  opacity: 0.55;
+  transition:
+    opacity 90ms linear,
+    left 90ms ease-out,
+    top 90ms ease-out;
+  pointer-events: none;
+}
+.joystick-base.active {
+  opacity: 1;
+}
+.joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  background: linear-gradient(#5b6688, #39415c 60%, #2b3248);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    0 3px 5px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.action-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.act {
+  border-radius: 50%;
+}
+.act.fire {
+  width: 84px;
+  height: 84px;
+  font-size: 14px;
+}
+.act.special {
+  width: 50px;
+  height: 50px;
+  font-size: 18px;
+}
+.act.switch {
+  width: 50px;
+  height: 50px;
+  font-size: 18px;
+}
+
+.key {
+  border: none;
+  border-radius: 14px 14px 18px 18px;
+  background: linear-gradient(#5b6688, #39415c 60%, #2b3248);
+  color: #d8deef;
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.3),
+    0 3px 4px rgba(0, 0, 0, 0.45);
+  touch-action: none;
+}
+
+.key:active {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.5),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.key.soft {
+  width: 76px;
+  height: 26px;
+  border-radius: 13px;
+  font-size: 11px;
+}
+
+@media (max-width: 620px) {
+  .screen {
+    width: 252px;
+    height: 144px;
+  }
+
+  .controls {
+    padding: 0 8px;
+  }
+
+  .joystick {
+    width: 130px;
+    height: 104px;
+  }
+
+  .joystick-base {
+    width: 104px;
+    height: 104px;
+    margin: -52px 0 0 -52px;
+  }
+
+  .joystick-knob {
+    width: 46px;
+    height: 46px;
+    margin: -23px 0 0 -23px;
+  }
+
+  .act.fire {
+    width: 70px;
+    height: 70px;
+  }
+
+  .act.special {
+    width: 44px;
+    height: 44px;
+  }
+
+  .act.switch {
+    width: 44px;
+    height: 44px;
+  }
+
+  .softkeys {
+    gap: 70px;
+  }
+}
