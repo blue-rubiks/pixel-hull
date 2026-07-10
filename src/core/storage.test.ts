@@ -10,6 +10,10 @@ test('dayDifference 計算本地日曆日差', () => {
   assert.equal(dayDifference('2026-06-10', '2026-06-12'), 2);
 });
 
+test('預設難度為 normal（舊存檔經 defaultSave 合併後自動補上）', () => {
+  assert.equal(defaultSave().difficulty, 'normal');
+});
+
 test('arcade 結算只在破紀錄時更新最高分', () => {
   let save = applyArcadeResult(defaultSave(), 100);
   assert.equal(save.highScore, 100);

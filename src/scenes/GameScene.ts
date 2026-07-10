@@ -8,12 +8,14 @@ import {
   PLAY_BOTTOM,
   PLAY_H,
 } from '../core/constants.ts';
-import { Hull } from '../core/hull.ts';
+import { DIFFICULTY_MODS, type Difficulty, type DifficultyMods } from '../core/difficulty.ts';
+import { Hull, hullScoreMultiplier } from '../core/hull.ts';
 import {
   enemyLoopScaling,
   generateTimeline,
   levelTimeline,
   LEVEL_PLANS,
+  rollThief,
   type EnemyKind,
   type SpawnEvent,
 } from '../core/waves.ts';
@@ -35,11 +37,22 @@ import {
   type WeaponState,
 } from '../core/weapons.ts';
 import {
+  generateTerrain,
+  TERRAIN_SEG_W,
+  TERRAIN_SPEED,
+  terrainMaxFor,
+  type TerrainColumn,
+} from '../core/terrain.ts';
+import { asteroidGapFor, generateAsteroids, type AsteroidEvent } from '../core/asteroids.ts';
+import { mulberry32 } from '../core/prng.ts';
+import {
   dailySeed,
   levelRng,
   localDateString,
   shareText,
+  STREAM_ASTEROIDS,
   STREAM_PICKUPS,
+  STREAM_TERRAIN,
   STREAM_UPGRADES,
   STREAM_WAVES,
   STREAM_WEAPONS,
@@ -65,10 +78,12 @@ const PICKUP_HEALTH_GATE = 0.7; // 存活率高於此值不生成補給（只在
 const PICKUP_SPAWN_CHANCE = 0.7; // 到生成時機時，實際生成的機率（非必掉）
 const PEEL_PER_CRASH = 3; // 被敵人撞到剝落的像素數
 const PEEL_PER_SHOT = 2; // 被敵彈打中剝落的像素數
-const RESTORE_PER_PICKUP = 2; // 一個補給回補的像素數
 const RESTORE_PER_REPAIR = 6; // REPAIR 升級卡回補的像素數
 const MAGNET_RADIUS = 40;
 const MAGNET_PULL = 45; // px/s
+const PEEL_PER_TERRAIN = 2; // 擦撞地形剝落的像素數
+const TERRAIN_GRACE_MS = 500; // 擦撞後的寬限，避免貼著斜坡被連續磨血
+const PEEL_PER_ROCK = 2; // 撞中立隕石剝落的像素數（比撞敵機輕，同地形擦撞）
 const WEAPON_DROP_SPAWN_MS = 35000;
 const ROCKET_SPEED = 90;
 const WHEEL_SPEED = 30;
@@ -77,7 +92,7 @@ const BEAM_SPEED = 36; // 光束光牆緩速往前（右）推進的速度
 const SPECIAL_COOLDOWN = 200; // 防止連按瞬間倒光彈藥
 
 /** 敵人移動模式：每種 kind 綁一個（見 moveEnemies 的 dispatch） */
-type EnemyBehavior = 'straight' | 'sine' | 'zigzag' | 'diver' | 'turret';
+type EnemyBehavior = 'straight' | 'sine' | 'zigzag' | 'diver' | 'turret' | 'thief';
 
 const ENEMY_SPECS: Record<
   EnemyKind,
@@ -100,12 +115,38 @@ const ENEMY_SPECS: Record<
   zigzag: { w: 4, h: 4, hp: 1, speed: 30, score: 18, behavior: 'zigzag', vy: 42 },
   turret: { w: 6, h: 5, hp: 2, speed: 26, score: 25, behavior: 'turret', fireMs: 900 },
   swarm: { w: 3, h: 3, hp: 1, speed: 54, score: 8, behavior: 'straight' },
+  thief: { w: 5, h: 4, hp: 1, speed: 40, score: 25, behavior: 'thief' },
+  rock: { w: 8, h: 7, hp: 3, speed: 14, score: 5, behavior: 'straight' }, // 中立隕石：慢漂掩體
 };
+
+// 掠奪者：補給生成後延遲進場（給玩家反應窗口）；叼到補給後加速往右逃
+const THIEF_SPAWN_DELAY_MS = 2000;
+const THIEF_ESCAPE_MUL = 1.5;
 
 const ENEMY_BULLET_SPEED = 50;
 // 砲塔：推進到此 x 停住、連射一段時間後離場
 const TURRET_HOLD_X = 80;
 const TURRET_HOLD_MS = 2600;
+
+// 菁英變體（高圈數的 SpawnEvent.elite 才觸發；變體種類由敵種決定）：
+// shield＝週期性開盾（盾起免疫、船頭盾條可見；收盾窗口才打得到）
+// split＝死亡分裂成兩隻 swarm；swarm 本身不當菁英
+type EliteKind = 'shield' | 'split';
+const ELITE_VARIANT: Record<EnemyKind, EliteKind | null> = {
+  drone: 'split',
+  darter: 'shield',
+  bomber: 'split',
+  diver: 'shield',
+  zigzag: 'shield',
+  turret: 'shield',
+  swarm: null,
+  thief: null, // 不進時間軸，永不菁英
+  rock: null, // 中立隕石，永不菁英
+};
+const SHIELD_UP_MS = 900; // 開盾（免疫）時長
+const SHIELD_CYCLE_MS = 1400; // 開盾＋收盾一輪；收盾窗口 = 500ms
+const ELITE_SCORE_MUL = 2; // 菁英擊殺分數倍率（先乘再套殘體加成）
+const SPLIT_CHILD_DY = 4; // 分裂子代與本體的垂直偏移
 
 const BOSS_BASE_HP = 25;
 const BOSS_HP_PER_LEVEL = 8;
@@ -202,6 +243,8 @@ interface Mover {
   /** 單發傷害（預設 1；飛彈用） */
   damage?: number;
   blink?: Phaser.Time.TimerEvent;
+  /** 補給被掠奪者叼走：位置由掠奪者驅動，暫停漂移／吸力／出界回收 */
+  carried?: boolean;
 }
 
 interface WeaponDrop extends Mover {
@@ -241,6 +284,14 @@ interface Enemy {
   state?: number;
   /** turret：停住連射到此 age 為止 */
   holdUntil?: number;
+  /** 菁英變體；undefined = 普通敵人 */
+  elite?: EliteKind;
+  /** 菁英標記（shield：船頭盾條；split：尾部識別點），跟著本體移動 */
+  badge?: Phaser.GameObjects.Rectangle;
+  /** thief：叼在鉗上的補給；被擊殺／撞死時原地掉落 */
+  carrying?: Mover;
+  /** rock：生成時預擲的補給掉落（擊碎時仍須過血量閘） */
+  drop?: boolean;
 }
 
 interface Boss {
@@ -263,6 +314,9 @@ interface Boss {
 
 export class GameScene extends Phaser.Scene {
   private mode: GameMode = 'arcade';
+  /** 街機難度（每日固定 normal）；係數表見 core/difficulty.ts */
+  private difficulty: Difficulty = 'normal';
+  private mods: DifficultyMods = DIFFICULTY_MODS.normal;
   private seed = 0;
   private dateStr = '';
   private pickupRng: () => number = Math.random;
@@ -296,6 +350,12 @@ export class GameScene extends Phaser.Scene {
   private specialHintShown = false;
   private boss: Boss | null = null;
   private backdrop!: Backdrop;
+  private terrain: TerrainColumn[] | null = null;
+  private terrainOffset = 0;
+  private terrainGfx!: Phaser.GameObjects.Graphics;
+  private terrainGraceUntil = 0;
+  private asteroids: AsteroidEvent[] = [];
+  private asteroidIdx = 0;
   private phase: Phase = 'playing';
   private level = 1;
   private timeline: SpawnEvent[] = [];
@@ -303,6 +363,7 @@ export class GameScene extends Phaser.Scene {
   private elapsed = 0;
   private score = 0;
   private scoreText!: PixelText;
+  private multText!: PixelText;
   private levelText!: PixelText;
   private nextFireAt = 0;
   private chooseUi: Phaser.GameObjects.GameObject[] = [];
@@ -356,6 +417,12 @@ export class GameScene extends Phaser.Scene {
       this.dateStr = localDateString();
       this.seed = dailySeed(this.dateStr);
     }
+    // 難度只作用於街機；每日固定 normal（同一天全球同局，難度不得介入）
+    this.difficulty = this.mode === 'daily' ? 'normal' : loadSave().difficulty;
+    this.mods = DIFFICULTY_MODS[this.difficulty];
+    // 地形畫在 startLevel 之前建立（比 ship 等後建物件低一層）
+    this.terrainGfx = this.add.graphics();
+    this.terrainGraceUntil = 0;
     this.startLevel();
     music.start(this.level);
     this.events.once('shutdown', () => music.stop());
@@ -364,6 +431,7 @@ export class GameScene extends Phaser.Scene {
     this.redrawShip();
 
     this.scoreText = new PixelText(this, 2, 2, '0');
+    this.multText = new PixelText(this, 2, 2, '');
     this.levelText = new PixelText(this, 0, 2, 'L1');
     this.levelText.setX(GAME_WIDTH - 2 - this.levelText.textWidth);
 
@@ -379,7 +447,11 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.onPointerDown(p));
 
     // 補給固定間隔出現；位置在每日挑戰用種子子流、一般模式用 Math.random
-    this.time.addEvent({ delay: PICKUP_SPAWN_MS, loop: true, callback: () => this.spawnPickup() });
+    this.time.addEvent({
+      delay: PICKUP_SPAWN_MS * this.mods.pickupIntervalMul,
+      loop: true,
+      callback: () => this.spawnPickup(),
+    });
     // 武器道具較稀有，間隔更長
     this.time.addEvent({
       delay: WEAPON_DROP_SPAWN_MS,
@@ -395,13 +467,48 @@ export class GameScene extends Phaser.Scene {
     this.timeline =
       this.mode === 'daily'
         ? generateTimeline(levelRng(this.seed, this.level, STREAM_WAVES), this.level)
-        : levelTimeline(this.level);
+        : levelTimeline(this.level, this.mods.spawnGapMul);
     this.timelineIdx = 0;
     this.elapsed = 0;
     this.pickupRng =
       this.mode === 'daily' ? levelRng(this.seed, this.level, STREAM_PICKUPS) : Math.random;
     this.weaponRng =
       this.mode === 'daily' ? levelRng(this.seed, this.level, STREAM_WEAPONS) : Math.random;
+    this.buildTerrain();
+    this.buildAsteroids();
+  }
+
+  /** 本關地形：長度只覆蓋出怪時間軸（Boss 戰時自然捲完離場）；種子化可重現 */
+  private buildTerrain(): void {
+    this.terrainOffset = 0;
+    this.terrainGfx.clear();
+    const maxH = terrainMaxFor(this.mode, this.level);
+    if (!maxH || this.timeline.length === 0) {
+      this.terrain = null;
+      return;
+    }
+    const lastT = this.timeline[this.timeline.length - 1]!.t;
+    const cols = Math.ceil(((lastT / 1000) * TERRAIN_SPEED + GAME_WIDTH) / TERRAIN_SEG_W);
+    const rng =
+      this.mode === 'daily'
+        ? levelRng(this.seed, this.level, STREAM_TERRAIN)
+        : mulberry32((0xc2b2ae35 ^ Math.imul(this.level, 0x27d4eb2f)) >>> 0);
+    this.terrain = generateTerrain(rng, cols, maxH);
+  }
+
+  /** 本關隕石排程：長度只覆蓋出怪時間軸（Boss 戰時殘石自然漂出）；種子化可重現 */
+  private buildAsteroids(): void {
+    this.asteroidIdx = 0;
+    const gap = asteroidGapFor(this.mode, this.level);
+    if (!gap || this.timeline.length === 0) {
+      this.asteroids = [];
+      return;
+    }
+    const rng =
+      this.mode === 'daily'
+        ? levelRng(this.seed, this.level, STREAM_ASTEROIDS)
+        : mulberry32((0x1b873593 ^ Math.imul(this.level, 0xcc9e2d51)) >>> 0);
+    this.asteroids = generateAsteroids(rng, this.timeline[this.timeline.length - 1]!.t, gap);
   }
 
   update(time: number, delta: number): void {
@@ -436,13 +543,16 @@ export class GameScene extends Phaser.Scene {
     this.advanceTimeline(delta);
     this.updateBoss(delta);
     this.moveAll(this.bullets, delta, (m) => m.rect.x > GAME_WIDTH + 2);
-    this.moveAll(this.enemyBullets, delta, (m) => m.rect.x < -4);
+    // 右邊界也要回收：ring/cross（及貼近 Boss 時的 aimed）會產生往右飛的敵彈
+    this.moveAll(this.enemyBullets, delta, (m) => m.rect.x < -4 || m.rect.x > GAME_WIDTH + 4);
     this.moveEnemies(delta);
     this.movePickups(delta);
     this.moveWeaponDrops(delta);
     this.moveWheels(delta);
     this.moveBeams(delta);
+    this.updateTerrain(delta);
     this.handleBulletHits();
+    this.handleEnemyBulletHits();
     this.handleWheelHits();
     this.handleBeamHits();
     this.handlePlayerCollisions();
@@ -457,7 +567,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.phase === 'choosing') {
       if (this.time.now < this.chooseReadyAt) return;
-      const idx = Math.floor((p.y - 38) / 9);
+      const idx = Math.floor((p.y - CHOOSE_OPT_Y) / CHOOSE_OPT_GAP);
       if (idx >= 0 && idx < this.chooseOptions.length) {
         this.chooseIdx = idx;
         this.confirmChoice(this.time.now);
@@ -681,17 +791,35 @@ export class GameScene extends Phaser.Scene {
     while (this.timelineIdx < this.timeline.length) {
       const ev = this.timeline[this.timelineIdx]!;
       if (ev.t > this.elapsed) break;
-      this.spawnEnemy(ev.kind, ev.y);
+      this.spawnEnemy(ev.kind, ev.y, ev.elite);
       this.timelineIdx++;
     }
-    if (this.timelineIdx >= this.timeline.length && this.enemies.length === 0) {
+    // 隕石排程走同一個 elapsed（Boss 開打後 elapsed 停走 → 自動停止出石）
+    while (this.asteroidIdx < this.asteroids.length) {
+      const ev = this.asteroids[this.asteroidIdx]!;
+      if (ev.t > this.elapsed) break;
+      this.spawnAsteroid(ev);
+      this.asteroidIdx++;
+    }
+    // 殘餘隕石不擋 Boss 開打（它是中立地物，會自然漂出畫面）
+    if (this.timelineIdx >= this.timeline.length && !this.enemies.some((e) => e.kind !== 'rock')) {
       this.startBoss();
     }
   }
 
-  private spawnEnemy(kind: EnemyKind, yRatio: number): void {
+  /** 中立隕石：走敵人管線（子彈／光輪／光束命中全沿用）；地形關疊加時擠進走廊帶 */
+  private spawnAsteroid(ev: AsteroidEvent): void {
+    const spec = ENEMY_SPECS.rock;
+    const inset = terrainMaxFor(this.mode, this.level) ?? 0;
+    const y = PLAY_TOP + inset + ev.y * (PLAY_H - inset * 2 - spec.h);
+    const ratio = Phaser.Math.Clamp((y - PLAY_TOP) / (PLAY_H - spec.h), 0, 1);
+    this.spawnEnemy('rock', ratio).drop = ev.drop;
+  }
+
+  private spawnEnemy(kind: EnemyKind, yRatio: number, elite?: boolean): Enemy {
     const spec = ENEMY_SPECS[kind];
-    const { hpBonus, speedMul } = enemyLoopScaling(this.level);
+    const { hpBonus, speedMul: loopSpeedMul } = enemyLoopScaling(this.level);
+    const speedMul = loopSpeedMul * this.mods.enemySpeedMul; // 難度疊在圈數加成之上
     const y = PLAY_TOP + yRatio * (PLAY_H - spec.h);
     const rect = this.add.image(GAME_WIDTH + 2, y, `spr-${kind}`).setOrigin(0, 0);
     const e: Enemy = {
@@ -703,6 +831,13 @@ export class GameScene extends Phaser.Scene {
       baseY: y,
       nextFireAt: spec.fireMs ?? 0,
     };
+    const variant = elite ? ELITE_VARIANT[kind] : null;
+    if (variant) {
+      e.elite = variant;
+      // shield：船頭全高盾條（開盾才顯示）；split：尾部 1×2 識別點（跟著移動，與敵彈區分）
+      const [w, h] = variant === 'shield' ? [1, spec.h] : [1, 2];
+      e.badge = this.add.rectangle(rect.x, rect.y, w, h, NOKIA_FG).setOrigin(0, 0);
+    }
     if (spec.behavior === 'zigzag') {
       // 上半場往下、下半場往上：朝中央走再撞邊反彈，路徑必跨整個高度
       e.vy = (y < GAME_HEIGHT / 2 ? spec.vy! : -spec.vy!) * speedMul;
@@ -712,6 +847,22 @@ export class GameScene extends Phaser.Scene {
       e.state = 0;
     }
     this.enemies.push(e);
+    return e;
+  }
+
+  /** shield 菁英目前是否開盾（免疫）；由 age 驅動 → daily 同種子可重現 */
+  private isShielded(e: Enemy): boolean {
+    return e.elite === 'shield' && e.age % SHIELD_CYCLE_MS < SHIELD_UP_MS;
+  }
+
+  /** split 菁英死亡分裂：原地生出兩隻上下錯開的 swarm */
+  private spawnSplitChildren(x: number, y: number): void {
+    const spec = ENEMY_SPECS.swarm;
+    for (const dy of [-SPLIT_CHILD_DY, SPLIT_CHILD_DY]) {
+      const ratio = Phaser.Math.Clamp((y + dy - PLAY_TOP) / (PLAY_H - spec.h), 0, 1);
+      const child = this.spawnEnemy('swarm', ratio);
+      child.rect.x = Math.min(x, GAME_WIDTH - spec.w);
+    }
   }
 
   private moveEnemies(delta: number): void {
@@ -721,6 +872,14 @@ export class GameScene extends Phaser.Scene {
       const spec = ENEMY_SPECS[e.kind];
       e.age += delta;
       this.stepEnemy(e, spec, dt);
+      if (e.badge) {
+        if (e.elite === 'shield') {
+          e.badge.setPosition(e.rect.x - 2, e.rect.y);
+          e.badge.setVisible(this.isShielded(e));
+        } else {
+          e.badge.setPosition(e.rect.x + spec.w + 1, e.rect.y + Math.floor((spec.h - 2) / 2));
+        }
+      }
       // 砲塔只在停住（state 1）時連射，其餘有 fireMs 的怪一進畫面就射
       if (spec.fireMs && e.rect.x < GAME_WIDTH && e.age >= e.nextFireAt) {
         const canFire = spec.behavior !== 'turret' || e.state === 1;
@@ -729,7 +888,10 @@ export class GameScene extends Phaser.Scene {
           this.enemyFire(e);
         }
       }
-      if (e.rect.x < -8) {
+      // 左緣：一般離場；右緣：只有掠奪者會逃出去，叼著的補給一併沒收
+      if (e.rect.x < -8 || e.rect.x > GAME_WIDTH + 8) {
+        if (e.carrying) this.destroyPickup(this.pickups.indexOf(e.carrying));
+        e.badge?.destroy();
         e.rect.destroy();
         this.enemies.splice(i, 1);
       }
@@ -778,9 +940,51 @@ export class GameScene extends Phaser.Scene {
           e.rect.x -= speed * 1.4 * dt; // 離場加速
         }
         break;
+      case 'thief': {
+        // 鉗上的補給可能被玩家貼身搶回（rect 已銷毀）→ 回到搜索
+        if (e.carrying && !e.carrying.rect.active) e.carrying = undefined;
+        if (e.carrying) {
+          // 已叼到：加速往右逃，補給拖在左鉗
+          e.rect.x += speed * THIEF_ESCAPE_MUL * dt;
+          e.carrying.rect.setPosition(e.rect.x - 3, e.rect.y);
+          break;
+        }
+        const target = this.nearestPickup(e.rect);
+        if (!target) {
+          e.rect.x -= speed * dt; // 沒補給可搶：像雜兵一樣飄過
+          break;
+        }
+        const dx = target.rect.x - e.rect.x;
+        const dy = target.rect.y - e.rect.y;
+        const len = Math.max(1, Math.hypot(dx, dy));
+        e.rect.x += (dx / len) * speed * dt;
+        e.rect.y = Phaser.Math.Clamp(e.rect.y + (dy / len) * speed * dt, PLAY_TOP, maxY);
+        if (this.overlaps(e.rect, target.rect)) {
+          // 叼走：補給位置改由掠奪者驅動（movePickups 跳過）
+          target.carried = true;
+          e.carrying = target;
+          sfx.key();
+        }
+        break;
+      }
       default: // straight（drone / bomber / swarm）
         e.rect.x -= speed * dt;
     }
+  }
+
+  /** 最近的未被叼走補給（掠奪者的目標） */
+  private nearestPickup(from: SpriteObj): Mover | null {
+    let best: Mover | null = null;
+    let bestD = Infinity;
+    for (const p of this.pickups) {
+      if (p.carried) continue;
+      const d = Math.hypot(p.rect.x - from.x, p.rect.y - from.y);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    return best;
   }
 
   /** 小兵開火：砲塔朝玩家瞄準，其餘固定直線往左；子彈沿用 enemyBullets 管線 */
@@ -808,7 +1012,9 @@ export class GameScene extends Phaser.Scene {
   private startBoss(): void {
     this.phase = 'boss';
     const def = bossForLevel(this.level);
-    const maxHp = Math.round((BOSS_BASE_HP + (this.level - 1) * BOSS_HP_PER_LEVEL) * def.hpMul);
+    const maxHp = Math.round(
+      (BOSS_BASE_HP + (this.level - 1) * BOSS_HP_PER_LEVEL) * def.hpMul * this.mods.bossHpMul,
+    );
     const rect = this.add.image(GAME_WIDTH + 2, 0, def.sprite).setOrigin(0, 0);
     rect.y = PLAY_TOP + (PLAY_H - rect.height) / 2;
     const holdX = GAME_WIDTH - rect.width - 4;
@@ -987,7 +1193,21 @@ export class GameScene extends Phaser.Scene {
     // D：到了生成時機也非必掉，再過一道機率閘增加不確定性
     if (this.pickupRng() > PICKUP_SPAWN_CHANCE) return;
     const y = PLAY_TOP + this.pickupRng() * (PLAY_H - 6);
-    const rect = this.add.image(GAME_WIDTH + 2, y, 'spr-pickup').setOrigin(0, 0);
+    this.spawnPickupAt(GAME_WIDTH + 2, y);
+    // 掠奪者：L3 起有機率跟著補給進場搶奪（骰子此刻擲，daily 走同一補給子流可重現）；
+    // 延遲進場給玩家反應窗口，從補給的同一列切入
+    if (rollThief(this.level, this.pickupRng, this.mods.thiefChance)) {
+      const ratio = Phaser.Math.Clamp((y - PLAY_TOP) / (PLAY_H - ENEMY_SPECS.thief.h), 0, 1);
+      this.time.delayedCall(THIEF_SPAWN_DELAY_MS, () => {
+        if (this.phase === 'choosing' || this.phase === 'gameover') return;
+        this.spawnEnemy('thief', ratio);
+      });
+    }
+  }
+
+  /** 在指定位置生一顆補給（右緣定時流與隕石擊碎掉落共用）；漂移與閃爍同一套 */
+  private spawnPickupAt(x: number, y: number): void {
+    const rect = this.add.image(x, y, 'spr-pickup').setOrigin(0, 0);
     // LCD 風格硬切閃爍（不用 alpha 漸變，維持嚴格雙色）
     const blink = this.time.addEvent({
       delay: 250,
@@ -1002,6 +1222,7 @@ export class GameScene extends Phaser.Scene {
     const cy = this.ship.y + SHIP_H / 2;
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i]!;
+      if (p.carried) continue; // 位置由掠奪者驅動（見 stepEnemy 的 thief）
       p.rect.x += (p.vx * delta) / 1000;
       if (this.stats.magnet) {
         const dx = cx - p.rect.x;
@@ -1023,6 +1244,84 @@ export class GameScene extends Phaser.Scene {
     p.blink?.remove();
     p.rect.destroy();
     this.pickups.splice(index, 1);
+  }
+
+  /** 掠奪者死亡／撞毀：叼著的補給原地掉落、恢復漂移（玩家還撿得回來） */
+  private dropCarried(e: Enemy): void {
+    if (!e.carrying) return;
+    e.carrying.carried = false;
+    e.carrying = undefined;
+  }
+
+  // ---- 地形 ----
+
+  /** 地形：捲動、重繪、與玩家碰撞（推回走廊＋剝像素） */
+  private updateTerrain(delta: number): void {
+    if (!this.terrain) return;
+    this.terrainOffset += (TERRAIN_SPEED * delta) / 1000;
+    this.drawTerrain();
+    this.collideTerrain();
+  }
+
+  private drawTerrain(): void {
+    const g = this.terrainGfx;
+    g.clear();
+    g.fillStyle(NOKIA_FG);
+    const terrain = this.terrain!;
+    const off = Math.floor(this.terrainOffset);
+    const first = Math.max(0, Math.floor((off - GAME_WIDTH) / TERRAIN_SEG_W));
+    for (let i = first; i < terrain.length; i++) {
+      const x = GAME_WIDTH + i * TERRAIN_SEG_W - off;
+      if (x >= GAME_WIDTH) break;
+      const c = terrain[i]!;
+      if (c.top > 0) g.fillRect(x, PLAY_TOP, TERRAIN_SEG_W, c.top);
+      if (c.bottom > 0) g.fillRect(x, PLAY_BOTTOM - c.bottom, TERRAIN_SEG_W, c.bottom);
+    }
+  }
+
+  /** 只對玩家判定（敵人與子彈視為飛在地形前方）；以存活像素的實際邊緣為準 */
+  private collideTerrain(): void {
+    if (this.phase === 'gameover') return;
+    // 存活像素的實際邊緣（船會縮小，用實體判定）
+    let pxMin = SHIP_W;
+    let pxMax = 0;
+    let pyMin = SHIP_H;
+    let pyMax = 0;
+    for (const p of this.hull.pixels()) {
+      pxMin = Math.min(pxMin, p.x);
+      pxMax = Math.max(pxMax, p.x + 1);
+      pyMin = Math.min(pyMin, p.y);
+      pyMax = Math.max(pyMax, p.y + 1);
+    }
+    if (pxMax <= pxMin) return;
+    // 船身 x 範圍覆蓋到的地形柱，取上下最大高度
+    const terrain = this.terrain!;
+    const off = Math.floor(this.terrainOffset);
+    const li = Math.floor((this.ship.x + pxMin - GAME_WIDTH + off) / TERRAIN_SEG_W);
+    const ri = Math.floor((this.ship.x + pxMax - 1 - GAME_WIDTH + off) / TERRAIN_SEG_W);
+    let topMax = 0;
+    let botMax = 0;
+    for (let i = Math.max(0, li); i <= ri && i < terrain.length; i++) {
+      topMax = Math.max(topMax, terrain[i]!.top);
+      botMax = Math.max(botMax, terrain[i]!.bottom);
+    }
+    if (topMax === 0 && botMax === 0) return;
+    const ceilY = PLAY_TOP + topMax;
+    const floorY = PLAY_BOTTOM - botMax;
+    let hit = false;
+    if (this.ship.y + pyMin < ceilY) {
+      this.ship.y = ceilY - pyMin;
+      hit = true;
+    }
+    if (this.ship.y + pyMax > floorY) {
+      this.ship.y = floorY - pyMax;
+      hit = true;
+    }
+    if (!hit) return;
+    const now = this.time.now;
+    if (now < this.terrainGraceUntil) return;
+    this.terrainGraceUntil = now + TERRAIN_GRACE_MS;
+    this.damagePlayer(PEEL_PER_TERRAIN);
   }
 
   // ---- 移動與碰撞 ----
@@ -1047,7 +1346,8 @@ export class GameScene extends Phaser.Scene {
         const e = this.enemies[ei]!;
         if (!this.overlaps(b.rect, e.rect)) continue;
         this.damageEnemy(e, ei, b.damage ?? 1);
-        if (b.pierce && b.pierce > 0) {
+        // 隕石擋下一切子彈（穿透也止步），否則掩體對敵方單向失效
+        if (e.kind !== 'rock' && b.pierce && b.pierce > 0) {
           b.pierce--;
         } else {
           spent = true;
@@ -1067,7 +1367,27 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** 敵彈（含 Boss 彈）打到隕石：彈被吃掉、石削 1 滴——隕石是擋雙方火線的掩體 */
+  private handleEnemyBulletHits(): void {
+    for (let bi = this.enemyBullets.length - 1; bi >= 0; bi--) {
+      const b = this.enemyBullets[bi]!;
+      for (let ei = this.enemies.length - 1; ei >= 0; ei--) {
+        const e = this.enemies[ei]!;
+        if (e.kind !== 'rock' || !this.overlaps(b.rect, e.rect)) continue;
+        b.rect.destroy();
+        this.enemyBullets.splice(bi, 1);
+        this.damageEnemy(e, ei, 1);
+        break;
+      }
+    }
+  }
+
   private damageEnemy(e: Enemy, index: number, amount = 1): void {
+    // 開盾期免疫：攻擊被吃掉（子彈照樣消耗），等收盾窗口再打
+    if (this.isShielded(e)) {
+      sfx.key();
+      return;
+    }
     e.hp -= amount;
     if (e.hp > 0) {
       // 未死：硬切閃爍表示受擊（不用 alpha 漸變，維持嚴格雙色）
@@ -1080,9 +1400,18 @@ export class GameScene extends Phaser.Scene {
     const spec = ENEMY_SPECS[e.kind];
     sfx.explode();
     this.burst(e.rect.x + spec.w / 2, e.rect.y + spec.h / 2, 5);
+    const { x, y } = e.rect;
+    this.dropCarried(e);
+    e.badge?.destroy();
     e.rect.destroy();
     this.enemies.splice(index, 1);
-    this.addScore(spec.score);
+    this.addScore(spec.score * (e.elite ? ELITE_SCORE_MUL : 1));
+    if (e.elite === 'split') this.spawnSplitChildren(x, y);
+    // 隕石擊碎（任何彈源都算，玩家本體撞碎不走這裡）：預擲有中且過血量閘才掉補給
+    // ——與 spawnPickup 同一道閘，補給經濟緊度不變；掉出的補給掠奪者照樣會來搶
+    if (e.kind === 'rock' && e.drop && this.hull.ratio <= PICKUP_HEALTH_GATE) {
+      this.spawnPickupAt(x + 1, y + 1);
+    }
   }
 
   private handlePlayerCollisions(): void {
@@ -1090,9 +1419,12 @@ export class GameScene extends Phaser.Scene {
       const e = this.enemies[i]!;
       if (this.hitsHull(e.rect)) {
         this.burst(e.rect.x + 2, e.rect.y + 2, 5);
+        this.dropCarried(e);
+        e.badge?.destroy();
         e.rect.destroy();
         this.enemies.splice(i, 1);
-        this.damagePlayer(PEEL_PER_CRASH);
+        // 撞碎中立隕石較撞敵機輕（且不掉補給——想拿補給就用打的）
+        this.damagePlayer(e.kind === 'rock' ? PEEL_PER_ROCK : PEEL_PER_CRASH);
         if (this.phase === 'gameover') return;
       }
     }
@@ -1116,8 +1448,9 @@ export class GameScene extends Phaser.Scene {
       if (this.hitsHull(p.rect)) {
         this.destroyPickup(i);
         sfx.pickup();
-        this.hull.restore(RESTORE_PER_PICKUP);
+        this.hull.restore(this.mods.restorePerPickup);
         this.redrawShip();
+        this.updateMultHud();
       }
     }
     for (let i = this.weaponDrops.length - 1; i >= 0; i--) {
@@ -1161,6 +1494,7 @@ export class GameScene extends Phaser.Scene {
     }
     sfx.hit();
     this.redrawShip();
+    this.updateMultHud();
     this.cameras.main.shake(60, 0.01);
     if (this.hull.isDestroyed) this.die();
   }
@@ -1169,17 +1503,24 @@ export class GameScene extends Phaser.Scene {
     this.phase = 'gameover';
     music.stop();
     sfx.gameover();
+    this.multText.setText(''); // 結算畫面不需要倍率
     this.ship.setVisible(false);
     for (const w of this.wingmanRects) w.destroy();
     this.wingmanRects = [];
     this.burst(this.ship.x + SHIP_W / 2, this.ship.y + SHIP_H / 2, 14);
     const save = loadSave();
     if (this.mode === 'arcade') {
-      const updated = applyArcadeResult(save, this.score);
-      persistSave(updated);
+      // 簡單難度不記最高分（避免洗分）；仍顯示既有紀錄
+      const record = this.difficulty !== 'easy';
+      const updated = record ? applyArcadeResult(save, this.score) : save;
+      if (record) persistSave(updated);
       this.centerText(14, '失敗');
       this.centerText(28, `得分 ${this.score}`);
-      this.centerText(42, this.score >= updated.highScore ? '新高!' : `最高 ${updated.highScore}`);
+      // 與更新前的紀錄比：真的破了舊紀錄才顯示「新高!」（平手或首局 0 分不算）
+      this.centerText(
+        42,
+        record && this.score > save.highScore ? '新高!' : `最高 ${updated.highScore}`,
+      );
       this.centerText(58, '開火重來  M 返回');
     } else {
       const updated = applyDailyResult(save, this.dateStr, this.score, this.level);
@@ -1329,6 +1670,7 @@ export class GameScene extends Phaser.Scene {
     if (choice.id === 'repair') {
       this.hull.restore(RESTORE_PER_REPAIR);
       this.redrawShip();
+      this.updateMultHud();
     }
     this.updateWingmen();
     for (const obj of this.chooseUi) obj.destroy();
@@ -1345,8 +1687,17 @@ export class GameScene extends Phaser.Scene {
   // ---- 共用 ----
 
   private addScore(points: number): void {
-    this.score += points;
+    // 殘體加成：船越殘、得分越高（見 hullScoreMultiplier）
+    this.score += Math.round(points * hullScoreMultiplier(this.hull.ratio));
     this.scoreText.setText(String(this.score));
+    this.updateMultHud();
+  }
+
+  /** 殘體加成 HUD：倍率 >1 時顯示在分數右側（如 X1.4） */
+  private updateMultHud(): void {
+    const mult = hullScoreMultiplier(this.hull.ratio);
+    this.multText.setText(mult > 1 ? `X${mult.toFixed(1)}` : '');
+    this.multText.setX(this.scoreText.x + this.scoreText.textWidth + 3);
   }
 
   private centerText(y: number, text: string): PixelText {

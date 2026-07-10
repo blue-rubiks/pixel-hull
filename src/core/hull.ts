@@ -22,6 +22,14 @@ export function shapeToPixels(shape: readonly string[]): PixelPos[] {
   return pixels;
 }
 
+/**
+ * 殘體加成：船體缺越多像素、得分倍率越高（滿血 ×1、缺一半 ×2、剩 1 顆約 ×2.9）。
+ * 讓「要不要吃補給／回血」變成風險報酬抉擇。量化到 0.1 一階，HUD 顯示值＝實際值。
+ */
+export function hullScoreMultiplier(ratio: number): number {
+  return Math.round((1 + 2 * (1 - ratio)) * 10) / 10;
+}
+
 export class Hull {
   /** 全部佈局像素，依剝落優先序排列（離核心越遠排越前面） */
   private readonly layout: readonly PixelPos[];

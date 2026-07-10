@@ -58,6 +58,23 @@ const SPRITES: Record<string, readonly string[]> = {
     'XXX',
     '.XX',
   ],
+  'spr-thief': [
+    // 5×4 掠奪者：左側張開的雙鉗（叼補給用）＋艙體
+    'X..XX',
+    '.XXXX',
+    '.XXXX',
+    'X..XX',
+  ],
+  'spr-rock': [
+    // 8×7 中立隕石：不規則圓岩、兩個鏤空隕石坑（與敵機的機械剪影區隔）
+    '..XXXX..',
+    '.XXXXXX.',
+    'XXXX.XXX',
+    'XXXXXXXX',
+    'XX.XXXXX',
+    '.XXXXXXX',
+    '..XXXX..',
+  ],
   'spr-boss': [
     // 11×9 關底魔王：左右對稱、上下武器莢艙＋中央砲口＋雙引擎
     '...XXXXX...',

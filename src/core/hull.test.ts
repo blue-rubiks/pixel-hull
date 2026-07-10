@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Hull, SHIP_SHAPE, shapeToPixels } from './hull.ts';
+import { Hull, hullScoreMultiplier, SHIP_SHAPE, shapeToPixels } from './hull.ts';
 
 test('shapeToPixels 解析 X 為像素座標', () => {
   const pixels = shapeToPixels(['X.', '.X']);
@@ -42,6 +42,14 @@ test('restore 從核心往外回補、不超過總數', () => {
   assert.equal(hull.count, hull.total);
   // 回補順序 = 剝落順序的反轉（離核心近的先回來）
   assert.deepEqual(revived, [...removed].reverse());
+});
+
+test('hullScoreMultiplier：滿血 ×1、缺一半 ×2、量化到 0.1 一階', () => {
+  assert.equal(hullScoreMultiplier(1), 1);
+  assert.equal(hullScoreMultiplier(0.5), 2);
+  // 預設 14 顆船：缺 1 顆 ×1.1、只剩 1 顆 ×2.9
+  assert.equal(hullScoreMultiplier(13 / 14), 1.1);
+  assert.equal(hullScoreMultiplier(1 / 14), 2.9);
 });
 
 test('剝落順序完全確定：兩個相同船形剝落結果一致', () => {

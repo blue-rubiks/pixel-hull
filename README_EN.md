@@ -32,10 +32,11 @@ It is not a faithful clone. It reworks the original around three distinct ideas:
 
 ## ✨ Core Features
 
-- 🟢 **Pixel-hull mechanic** —— the ship is made of a dozen-odd pixels; taking damage strips them away, so the ship literally shrinks and its fire rate weakens. Collecting supplies restores them. It's the health bar, visual feedback, and risk/reward loop all in one.
+- 🟢 **Pixel-hull mechanic** —— the ship is made of a dozen-odd pixels; taking damage strips them away, so the ship literally shrinks and its fire rate weakens. Collecting supplies restores them. It's the health bar, visual feedback, and risk/reward loop all in one. **Wounded bonus**: the more pixels you're missing, the higher your score multiplier (×1 at full hull, up to ~×2.9, shown live on the HUD) —— repairing becomes a real decision.
 - 📅 **Daily challenge** —— seeded by your local calendar day, so every player gets the exact same run on any given day; keeps a daily best and a streak, with a one-tap emoji result to share.
-- 🎮 **Two modes** —— an 8-level Arcade difficulty ramp (levels keep going after clearing it, bosses cycle, HP scales) plus a once-a-day Daily run.
-- 👾 **7 enemy types + 8 bosses** —— each with distinct movement; every level ends with a uniquely-styled boss that rotates attack patterns and enrages at low HP.
+- 🎮 **Two modes** —— an 8-level Arcade difficulty ramp (levels keep going after clearing it, bosses cycle, HP scales) plus a once-a-day Daily run; Arcade offers EASY/NORMAL/HARD difficulty.
+- 👾 **8 enemy types + 8 bosses** —— each with distinct movement; every level ends with a uniquely-styled boss that rotates attack patterns and enrages at low HP. Post-clear loops introduce **elite variants**: shielded elites (periodically immune —— hit the window when the shield drops) and splitters (burst into two swarm on death), worth double points. The **thief** dives for supply drops and flees with them —— kill it first or lose the pickup.
+- ⛰️ **Cave-terrain levels** —— on certain levels (Arcade L3/L6, Daily every 3rd level) scrolling terrain grows from the top and bottom edges, squeezing the corridor; scraping it strips hull pixels. Dodging terrain is a different skill from dodging bullets.
 - ⬆️ **Upgrade-card system** —— pick 1 of 3 cards after each level (rapid fire / wingman / piercing shots / magnet / hull repair), a Vampire-Survivors-style growth loop.
 - 🚀 **Special weapons** —— rocket (straight, high damage), beam (a forward-advancing piercing column ahead of the ship's nose), and wheel (slow, piercing); limited ammo, switchable.
 - 📱 **Nokia-style phone shell + LCD grid + PWA** —— installable to your home screen, playable offline.
@@ -80,6 +81,8 @@ npm run dev
 # 4. Open the URL printed in the terminal (defaults to http://localhost:5173)
 ```
 
+> 💡 To let **other devices on the same network** (e.g. your phone) connect, run `npm run dev -- --host` instead, then open the LAN URL printed in the terminal — remember the `/pixel-hull/` path, e.g. `http://192.168.x.x:5173/pixel-hull/`.
+
 ## 📁 Project Structure
 
 ```
@@ -99,16 +102,26 @@ pixel-hull/
 
 ### Two Modes
 
-- **Arcade**: an 8-level campaign with a difficulty ramp; after clearing it the levels keep going, bosses cycle, and HP keeps scaling, with regular enemies getting slightly faster and tankier each loop.
-- **Daily**: one seeded run per local calendar day. Every player gets the same waves, upgrade choices, and item drops; keeps a daily best and a streak in `localStorage`. No accounts, no backend.
+- **Arcade**: an 8-level campaign with a difficulty ramp; after clearing it the levels keep going, bosses cycle, and HP keeps scaling, with regular enemies getting slightly faster and tankier each loop. Pick **EASY/NORMAL/HARD** from the menu to tune enemy speed, spawn density, boss HP, and supply pacing (NORMAL is the original balance, and the choice is remembered); EASY doesn't record the high score, to keep it off the leaderboard.
+- **Daily**: one seeded run per local calendar day. Every player gets the same waves, upgrade choices, and item-drop sequence (when and how many drops actually appear varies with your health and pace); keeps a daily best and a streak in `localStorage`. Difficulty is fixed at NORMAL so everyone shares the same run. No accounts, no backend.
 
 ### The Pixel-Hull Mechanic
 
 The player's ship is built from a dozen-odd pixels. **Taking damage strips pixels away** —— the ship literally shrinks and its fire rate drops; collecting supplies restores them. It doubles as the health bar and the core risk/reward tension. In the two-colour art style, the scattering pixels look great when the hull breaks apart.
 
+**Wounded bonus**: the more pixels your hull is missing, the higher your kill-score multiplier —— ×1 at full hull, ×2 at half, ~×2.9 with a single pixel left, displayed next to the score (e.g. `X1.4`). Repairs and supplies stop being a no-brainer: patch up to survive, or stay wounded and farm points.
+
+### Cave Terrain
+
+On certain levels the battlefield grows **scrolling terrain** along the top and bottom edges (Arcade L3/L6 and their looped counterparts; Daily every 3rd level). It squeezes the navigable corridor, and **scraping it strips hull pixels** while pushing you back inside (with a short grace period, so a slope won't grind you to death). Terrain is seeded and reproducible: everyone sees the same cave on the same level (or the same day). Enemies and bullets fly in front of the terrain —— only the player collides.
+
 ### Enemies & Bosses
 
-Seven enemy types, each with distinct movement: drone, darter, bomber (fires straight bullets), diver (homing dive), zigzag (bouncing), turret (aimed fire), and swarm. Each level ends with a boss —— **eight uniquely-styled bosses**, one per level (chosen by level, fully reproducible), each with rotating attack sequences and movement patterns, enraging and speeding up at low HP.
+Eight enemy types, each with distinct movement: drone, darter, bomber (fires straight bullets), diver (homing dive), zigzag (bouncing), turret (aimed fire), swarm, and thief (see below). Each level ends with a boss —— **eight uniquely-styled bosses**, one per level (chosen by level, fully reproducible), each with rotating attack sequences and movement patterns, enraging and speeding up at low HP.
+
+**The thief**: from L3 on, a supply cross has a 35% chance to attract a thief —— it enters two seconds later on the supply's row, beelines for the nearest pickup, and flees rightward at 1.5× speed once it grabs one. Kill it (or ram it) and the supply drops in place, still collectible; let it escape off the right edge and the supply is gone. "Kill it or grab it first" becomes a real-time dilemma exactly when you're hurt. The thief roll shares the supply's seeded sub-stream, so Daily runs stay reproducible.
+
+**Elite variants** (appear after clearing the first loop, chance scaling 10% → 30% per loop): the variant is fixed per enemy kind —— drone/bomber become **splitters** (a tail marker; burst into two swarm on death), the rest become **shielded elites** (immune while the nose shield-bar is lit; hit them in the down-window). Elite kills score ×2, then the wounded-hull multiplier applies. Elite rolls are baked into the seeded timeline: everyone meets the same elites on the same level (or day).
 
 ### Upgrade Cards
 
@@ -176,16 +189,17 @@ npm run format:check  # check only, no writes (for CI)
 
 ## 📝 Development Commands
 
-| Command             | Description                      |
-| ------------------- | -------------------------------- |
-| `npm install`       | Install deps & set up husky hook |
-| `npm run dev`       | Start the dev server             |
-| `npm run build`     | Production build to `dist/`      |
-| `npm run preview`   | Serve the production build       |
-| `npm run lint`      | ESLint                           |
-| `npm run typecheck` | `tsc --noEmit`                   |
-| `npm test`          | `node --test` (core logic)       |
-| `npm run format`    | Prettier                         |
+| Command                 | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `npm install`           | Install deps & set up husky hook         |
+| `npm run dev`           | Start the dev server                     |
+| `npm run dev -- --host` | Start the dev server, exposed on the LAN |
+| `npm run build`         | Production build to `dist/`              |
+| `npm run preview`       | Serve the production build               |
+| `npm run lint`          | ESLint                                   |
+| `npm run typecheck`     | `tsc --noEmit`                           |
+| `npm test`              | `node --test` (core logic)               |
+| `npm run format`        | Prettier                                 |
 
 ## 🚀 Deployment
 

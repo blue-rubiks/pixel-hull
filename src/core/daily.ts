@@ -6,11 +6,13 @@
 
 import { hashString, mulberry32 } from './prng.ts';
 
-/** 波次、升級、補給、武器道具的 rng 子流編號 */
+/** 波次、升級、補給、武器道具、地形、隕石的 rng 子流編號 */
 export const STREAM_WAVES = 1;
 export const STREAM_UPGRADES = 2;
 export const STREAM_PICKUPS = 3;
 export const STREAM_WEAPONS = 4;
+export const STREAM_TERRAIN = 5;
+export const STREAM_ASTEROIDS = 6;
 
 /** 玩家本地日期 YYYY-MM-DD（刻意不用 UTC，避免亞洲玩家下午才換日） */
 export function localDateString(now: Date = new Date()): string {

@@ -7,7 +7,16 @@
 
 import { mulberry32 } from './prng.ts';
 
-export type EnemyKind = 'drone' | 'darter' | 'bomber' | 'diver' | 'zigzag' | 'turret' | 'swarm';
+export type EnemyKind =
+  | 'drone'
+  | 'darter'
+  | 'bomber'
+  | 'diver'
+  | 'zigzag'
+  | 'turret'
+  | 'swarm'
+  | 'thief'
+  | 'rock'; // 中立隕石：不進時間軸、不進敵池，排程見 core/asteroids.ts
 
 export interface SpawnEvent {
   /** 進關後第幾毫秒出現 */
@@ -15,6 +24,8 @@ export interface SpawnEvent {
   kind: EnemyKind;
   /** 出生點垂直位置 0–1（乘上可用高度使用） */
   y: number;
+  /** 菁英變體（高圈數才出現；變體種類由 kind 決定，見 GameScene ELITE_VARIANT） */
+  elite?: boolean;
 }
 
 /** 一關的敵群計畫：出哪些敵、幾隻、出怪間隔，是否插群湧陣形 */
@@ -76,21 +87,54 @@ export function enemyLoopScaling(level: number): { hpBonus: number; speedMul: nu
 }
 
 /**
+ * 菁英出現機率：第一圈（L1–L8）為 0，之後每圈 +5%、從 10% 起跳、封頂 30%。
+ * 純函式（只吃 level）→ 兩模式共用、可重現。
+ */
+export function eliteChanceFor(level: number): number {
+  const loop = Math.floor((level - 1) / LEVEL_PLANS.length); // 0 = 第一圈
+  if (loop === 0) return 0;
+  return Math.min(30, 10 + (loop - 1) * 5) / 100; // 整數百分比運算，避免浮點誤差
+}
+
+/** 機率為 0 時不消耗 rng（第一圈時間軸與加入菁英前完全相同）；swarm 不當菁英 */
+function rollElite(kind: EnemyKind, chance: number, rng: () => number): boolean {
+  if (chance <= 0 || kind === 'swarm') return false;
+  return rng() < chance;
+}
+
+/** 掠奪者（thief）不進時間軸：補給生成時擲骰決定是否派出（見 GameScene spawnPickup） */
+export const THIEF_MIN_LEVEL = 3;
+export const THIEF_CHANCE = 0.35;
+
+/** 未達解鎖關卡時不消耗 rng（L1–L2 的補給序列與加入掠奪者前完全相同） */
+export function rollThief(level: number, rng: () => number, chance = THIEF_CHANCE): boolean {
+  if (level < THIEF_MIN_LEVEL) return false;
+  return rng() < chance;
+}
+
+/**
  * arcade 第 level 關（1 起算）的時間軸：依該關計畫、用 level 當固定種子生成。
  * 同一關每次完全相同；打通最後一關後沿用最後一關計畫，並隨額外圈數加速。
+ * gapMul：難度的出怪間隔倍率——rng 消耗量不變，同關敵種序列不因難度而異，只縮放間距。
  */
-export function levelTimeline(level: number): SpawnEvent[] {
+export function levelTimeline(level: number, gapMul = 1): SpawnEvent[] {
   const plan = LEVEL_PLANS[Math.min(level, LEVEL_PLANS.length) - 1]!;
   const lap = Math.max(1, level - LEVEL_PLANS.length + 1); // 第一圈內固定為 1，超過才 > 1
   const rng = mulberry32((0x9e3779b9 ^ Math.imul(level, 0x85ebca6b)) >>> 0);
-  return buildTimeline(plan, speedupFor(lap), rng);
+  return buildTimeline(plan, speedupFor(lap), rng, eliteChanceFor(level), gapMul);
 }
 
-function buildTimeline(plan: LevelPlan, speedup: number, rng: () => number): SpawnEvent[] {
+function buildTimeline(
+  plan: LevelPlan,
+  speedup: number,
+  rng: () => number,
+  eliteChance = 0,
+  gapMul = 1,
+): SpawnEvent[] {
   const events: SpawnEvent[] = [];
   let t = 800;
   for (let i = 0; i < plan.count; i++) {
-    t += Math.round((plan.gapMin + rng() * (plan.gapMax - plan.gapMin)) / speedup);
+    t += Math.round(((plan.gapMin + rng() * (plan.gapMax - plan.gapMin)) * gapMul) / speedup);
     if (plan.swarmEvery && i > 0 && i % plan.swarmEvery === 0) {
       // 群湧：一排快兵接連湧出，逼玩家閃位
       for (let k = 0; k < 3; k++) {
@@ -99,7 +143,9 @@ function buildTimeline(plan: LevelPlan, speedup: number, rng: () => number): Spa
       continue;
     }
     const kind = plan.pool[Math.floor(rng() * plan.pool.length)]!;
-    events.push({ t, kind, y: Math.round(rng() * 100) / 100 });
+    const y = Math.round(rng() * 100) / 100;
+    if (rollElite(kind, eliteChance, rng)) events.push({ t, kind, y, elite: true });
+    else events.push({ t, kind, y });
   }
   // 群湧會插入較早的 t，排序確保時間軸遞增（advanceTimeline 假設已排序）
   events.sort((a, b) => a.t - b.t);
@@ -124,12 +170,15 @@ export function generateTimeline(rng: () => number, level: number): SpawnEvent[]
   const count = Math.min(40, 18 + level * 4);
   const speedup = speedupFor(level);
   const pool = dailyPool(level);
+  const eliteChance = eliteChanceFor(level);
   const events: SpawnEvent[] = [];
   let t = 1000;
   for (let i = 0; i < count; i++) {
     t += Math.round((400 + rng() * 1100) / speedup);
     const kind = pool[Math.floor(rng() * pool.length)]!;
-    events.push({ t, kind, y: Math.round(rng() * 100) / 100 });
+    const y = Math.round(rng() * 100) / 100;
+    if (rollElite(kind, eliteChance, rng)) events.push({ t, kind, y, elite: true });
+    else events.push({ t, kind, y });
   }
   return events;
 }

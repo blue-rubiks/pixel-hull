@@ -3,6 +3,8 @@
  * 純靜態、無帳號系統。狀態轉移是純函式，localStorage 只做薄薄一層讀寫。
  */
 
+import type { Difficulty } from './difficulty.ts';
+
 export interface DailyState {
   lastDate: string | null;
   lastScore: number;
@@ -17,6 +19,8 @@ export interface SaveData {
   daily: DailyState;
   /** 全域靜音（音樂＋音效） */
   muted: boolean;
+  /** 街機難度（每日挑戰固定 normal，不受此設定影響） */
+  difficulty: Difficulty;
 }
 
 const STORAGE_KEY = 'pixel-hull-save';
@@ -26,6 +30,7 @@ export function defaultSave(): SaveData {
     highScore: 0,
     daily: { lastDate: null, lastScore: 0, lastLevel: 0, bestScore: 0, streak: 0 },
     muted: false,
+    difficulty: 'normal',
   };
 }
 
